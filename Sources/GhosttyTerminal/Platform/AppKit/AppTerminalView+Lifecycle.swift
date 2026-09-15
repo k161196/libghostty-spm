@@ -117,12 +117,10 @@
             let focused = window?.isKeyWindow == true
                 && window?.firstResponder === self
             core.setFocus(focused)
-            focusBridge.onFocusChange?(focused)
         }
 
         @objc func windowDidResignKey(_: Notification) {
             core.setFocus(false)
-            focusBridge.onFocusChange?(false)
         }
 
         @objc func windowDidChangeScreen(_: Notification) {
