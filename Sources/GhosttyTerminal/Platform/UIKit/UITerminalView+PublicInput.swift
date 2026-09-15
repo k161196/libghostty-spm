@@ -6,6 +6,7 @@
 //
 
 #if canImport(UIKit)
+    import GhosttyKit
     import UIKit
 
     extension UITerminalView {
@@ -26,7 +27,7 @@
         /// through ``sendKey(_:)``. False with no surface yet.
         @discardableResult
         public func paste(text: String) -> Bool {
-            surface?.sendText(text) ?? false
+            surface?.paste(text: text) ?? false
         }
 
         /// Presses and releases a key, as if typed on a hardware keyboard —
@@ -74,6 +75,41 @@
         @discardableResult
         public func scrollToRow(_ row: UInt) -> Bool {
             surface?.scrollToRow(row) ?? false
+        }
+
+        /// Whether the application currently owns the mouse.
+        public var isMouseCaptured: Bool {
+            surface?.isMouseCaptured ?? false
+        }
+
+        /// View points. Ghostty applies content scale internally.
+        public func sendMousePos(
+            x: Double,
+            y: Double,
+            modifiers: TerminalInputModifiers = []
+        ) {
+            surface?.sendMousePos(x: x, y: y, modifiers: modifiers)
+        }
+
+        @discardableResult
+        public func sendMouseButton(
+            state: ghostty_input_mouse_state_e,
+            button: ghostty_input_mouse_button_e,
+            modifiers: TerminalInputModifiers = []
+        ) -> Bool {
+            surface?.sendMouseButton(
+                state: state,
+                button: button,
+                modifiers: modifiers
+            ) ?? false
+        }
+
+        public func sendMouseScroll(
+            x: Double,
+            y: Double,
+            mods: TerminalScrollModifiers = TerminalScrollModifiers(precision: true)
+        ) {
+            surface?.sendMouseScroll(x: x, y: y, mods: mods)
         }
     }
 #endif

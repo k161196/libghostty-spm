@@ -8,6 +8,7 @@
 
 #if !canImport(UIKit) && canImport(AppKit)
     import AppKit
+    import GhosttyKit
 
     extension AppTerminalView {
         /// Make this view the window's first responder, reporting whether
@@ -28,15 +29,7 @@
         /// ``sendKey(_:)``. False when the surface has not been created yet.
         @discardableResult
         public func paste(text: String) -> Bool {
-            surface?.sendText(text) ?? false
-        }
-
-        /// The old name of ``paste(text:)``. It never bypassed key
-        /// translation — the text path is a paste, and an escape sequence
-        /// sent through it is pasted, not pressed.
-        @available(*, deprecated, renamed: "paste(text:)", message: "The text path is a paste; press keys with sendKey(_:).")
-        public func sendText(_ text: String) {
-            paste(text: text)
+            surface?.paste(text: text) ?? false
         }
 
         /// Presses and releases a key, as if typed on a hardware keyboard —
@@ -47,7 +40,10 @@
         public func sendKey(_ press: TerminalKeyPress) -> Bool {
             guard let surface else { return false }
             if hasMarkedText() {
-                unmarkText()
+                inputHandler?.inputMethodHandler?.commitMarkedText()
+                // The input method keeps its own copy of the composition and
+                // would re-mark it on the next keystroke.
+                inputContext?.discardMarkedText()
             }
             return surface.sendKey(press)
         }
@@ -79,6 +75,40 @@
         @discardableResult
         public func scrollToRow(_ row: UInt) -> Bool {
             surface?.scrollToRow(row) ?? false
+        }
+
+        /// Whether the application currently owns the mouse.
+        public var isMouseCaptured: Bool {
+            surface?.isMouseCaptured ?? false
+        }
+
+        public func sendMousePos(
+            x: Double,
+            y: Double,
+            modifiers: TerminalInputModifiers = []
+        ) {
+            surface?.sendMousePos(x: x, y: y, modifiers: modifiers)
+        }
+
+        @discardableResult
+        public func sendMouseButton(
+            state: ghostty_input_mouse_state_e,
+            button: ghostty_input_mouse_button_e,
+            modifiers: TerminalInputModifiers = []
+        ) -> Bool {
+            surface?.sendMouseButton(
+                state: state,
+                button: button,
+                modifiers: modifiers
+            ) ?? false
+        }
+
+        public func sendMouseScroll(
+            x: Double,
+            y: Double,
+            mods: TerminalScrollModifiers = TerminalScrollModifiers(precision: true)
+        ) {
+            surface?.sendMouseScroll(x: x, y: y, mods: mods)
         }
     }
 #endif

@@ -13,6 +13,53 @@ SPM package wrapping Ghostty terminal emulator C library for Apple platforms (ma
 
 Binary target: pre-built `libghostty` XCFramework. Dependency: MSDisplayLink ^2.2.0.
 
+## No GPL Files (hard rule — review every PR for it)
+
+This package is MIT and its resource bundle (`GhosttyKit_GhosttyTerminal.bundle`)
+lands inside every host app, so a GPL file here is a GPL redistribution
+obligation for every downstream. **Nothing GPL-licensed may enter the
+repository, in any form** — not as a resource, not as a string literal, not
+"just for the exec backend".
+
+The concrete thing this rule keeps out is upstream Ghostty's bash and zsh
+shell integration (`bash/ghostty.bash`, `zsh/.zshenv`,
+`zsh/ghostty-integration`). Those three files derive from Kitty and carry a
+GPLv3 header. PR #40 was refused for exactly that; two days later PR #43,
+titled as a clipboard change, brought the same files back under
+`Resources/Ghostty/shell-integration` in its second summary bullet and was
+merged unread. Every package release from 1.4.0 through 1.5.0 shipped them;
+those tags and releases were withdrawn after 1.5.0.
+
+What the bundle holds today, and all it may hold:
+
+- `Resources/Ghostty/shell-integration/bash/ghostty.bash` and
+  `zsh/.zshenv` + `zsh/ghostty-integration` — **our own MIT rewrite**, not
+  upstream's. They speak the same environment contract as libghostty's
+  `termio/shell_integration.zig` (bash: `--posix` + `ENV`,
+  `GHOSTTY_BASH_INJECT` / `_RCFILE` / `_ENV` / `_UNEXPORT_HISTFILE`; zsh:
+  `ZDOTDIR` + `GHOSTTY_ZSH_ZDOTDIR`) and emit OSC 133 A/B/C/D, OSC 7, OSC 2
+  (feature `title`) and DECSCUSR (feature `cursor`). Other
+  `GHOSTTY_SHELL_FEATURES` entries are ignored. bash and zsh only — no fish,
+  elvish or nushell; upstream's copies of those are MIT but were dropped so
+  the bundle is exactly what we maintain. macOS's `/bin/bash` 3.2 ignores
+  `ENV` under `--posix`, so injection needs bash 4+ there; a 3.2 user
+  sources `ghostty.bash` from `.bashrc` instead.
+- `bash/bash-preexec.sh` — vendored from rcaloras/bash-preexec, MIT, with
+  `LICENSE-bash-preexec.md` next to it.
+- `Resources/terminfo/` — the `xterm-ghostty` entry compiled from Ghostty's
+  `src/terminfo/ghostty.zig` (MIT; audited 2026-09-01 against ncurses'
+  `terminfo.src`, which publishes the same entry under its MIT-style
+  notice).
+
+`Script/check-licenses.sh` enforces it: it greps every tracked file for GPL
+license text and requires `shell-integration/` to hold exactly the five
+files above. pr.yml and release.yml run it, and
+`GhosttyRuntimeResourcesTests` asserts the same on the built bundle. When
+reviewing a PR, read the manifest diff and the full file list, not the title
+— run the script on the branch. When bumping Ghostty, never "refresh" the
+integration from upstream; re-read the upstream `shell_integration.zig`
+contract and adjust our scripts if it changed.
+
 ## Build & Test Commands
 
 ```bash
@@ -30,14 +77,19 @@ swift test
 ./build.sh
 ./build.sh --platforms macos,ios --source /path/to/ghostty --skip-tests
 
-# On a Mac with Xcode 27, first: eval "$(./Script/support/xcode27-sdk-overlay.sh)"
-# (Zig 0.15.2 cannot link its build runner against that macOS SDK otherwise)
+# On a Mac with Xcode 27, install the Metal toolchain component first:
+#   xcodebuild -downloadComponent MetalToolchain
+# (an SDK overlay script under Script/support/ was for Zig 0.15.2; 0.16
+# links its build runner against that SDK unaided, so it was removed)
 
 # Generate Package.swift from Package.swift.template (release.yml runs this)
 ./Script/build-manifest.sh <xcframework_zip> <download_url>
 
 # Regenerate GhosttyTheme Swift files from iTerm2-Color-Schemes
 ./Script/generate-themes.sh
+
+# Refuse GPL license text anywhere in the tree (pr.yml and release.yml run it)
+./Script/check-licenses.sh
 ```
 
 ## Architecture
@@ -55,7 +107,7 @@ GhosttyTerminal (Swift wrapper, ~70 files)
   ├─ Platform/AppKit/  macOS NSView: key events, NSTextInputClient IME, CAMetalLayer, public input
   ├─ Platform/Shared/  Pasteboard reading, file staging, shell escaping, key tables, IME state, foreground pid
   ├─ Platform/UIKit/   iOS UIView: UITextInput, keyboard, touch/gesture, drop, pinch zoom, IME, input accessory bar
-  ├─ Resources/        Bundled Ghostty shell-integration + terminfo (exec backend)
+  ├─ Resources/        Our MIT bash/zsh shell integration + Ghostty terminfo (exec backend; see "No GPL Files")
   ├─ State/            ObservableObject TerminalViewState (SwiftUI state container)
   ├─ Surface/          TerminalSurface, coordinator + display link, SwiftUI TerminalSurfaceView, delegates, TerminalKey/TerminalKeyPress
   └─ View/             TerminalView typealias + platform representables
@@ -119,9 +171,12 @@ Two omissions keep the noise down:
 - An **empty branch is omitted**, never written out. An empty
   `#elseif canImport(AppKit)` is dropped; an empty leading UIKit branch
   becomes `#if !canImport(UIKit) && canImport(AppKit)`.
-- **No file carries an `#else` / `#error` arm.** The unsupported-platform
-  assertion lives once, in `Platform/PlatformSupport.swift`, and every other
-  file simply compiles to nothing there.
+- **No `canImport` chain carries an `#else` / `#error` arm.** The
+  unsupported-platform assertion lives once, in
+  `Platform/PlatformSupport.swift`, and every other file simply compiles to
+  nothing there. A nested `targetEnvironment(macCatalyst)`, `os(visionOS)`,
+  or `os(iOS)` check may have an `#else`; that is a branch within a
+  platform, not a platform fallback.
 
 Swift spells the middle branch **`#elseif`**. C's `#elif` parses as an
 expression and fails with "consecutive statements on a line must be separated
@@ -130,14 +185,14 @@ that way, so grep for it before pushing.
 
 ### Host-Managed I/O
 
-All example apps run in App Sandbox. Use `GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED` for non-PTY I/O: `TerminalSurfaceOptions.backend = .inMemory(session)` selects it (`TerminalController+Surface.swift`); the default `.exec` is a PTY and needs the bundled `Resources/` (`GhosttyRuntimeResources`). Never disable sandbox or spawn subprocesses.
+All example apps run in App Sandbox. Use `GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED` for non-PTY I/O: `TerminalSurfaceOptions.backend = .inMemory(session)` selects it (`TerminalController+Surface.swift`); the default `.exec` is a PTY and uses the bundled `Resources/` (`GhosttyRuntimeResources` exports `GHOSTTY_RESOURCES_DIR` before `ghostty_init`; the shell integration in there is ours, see "No GPL Files"). Never disable sandbox or spawn subprocesses.
 
 ### iOS Input Architecture (UITextInput)
 
 `UITerminalView` conforms to `UITextInput` (which includes `UIKeyInput`) to receive both software keyboard and hardware keyboard input on iOS/Catalyst. The input chain:
 
 1. **Hardware keys** → `pressesBegan`/`pressesEnded` in `+Keyboard.swift` → `handleKeyPress` builds `ghostty_input_key_s` (HID usage translated to an AppKit keycode by `TerminalHardwareKeyRouter.appKitKeyCodeForUIKit`) → `surface.sendKeyEvent()`. Sets `hardwareKeyboard.keyHandled = true` (`HardwareKeyboardState`) to suppress the duplicate `insertText`/`deleteBackward` that UIKit would otherwise deliver. Ctrl combos never reach `pressesBegan` — the text-input system consumes them first, on iPadOS and Catalyst alike — so `keyCommands` registers a `UIKeyCommand` for every Ctrl+letter/digit/symbol with `wantsPriorityOverSystemBehavior`; `handleControlKeyCommand` sends it as a `TerminalKeyPress` on the key path, and `claimKeyCommandDelivery` dedupes per runloop turn against systems that deliver both the command and the press. Escape takes the same route for a different reason, on iPadOS and Catalyst alike: UIKit's system behaviour for a hardware Escape on a `UITextInput` first responder ends editing — the view resigns, the keyboard drops on iOS, and on Catalyst every later key goes nowhere until the next click — so `escapeKeyCommands` claims it under every non-Cmd modifier set and `handleEscapeKeyCommand` sends `.escape` to the surface; the commands are withheld while text is marked, since then the key is the input method's (it cancels the composition). On iOS (not Catalyst) a printable press under a composing input mode (`TerminalIMEComposition.shouldDeferKey`) is loaned to the input method as a `DeferredInputMethodKey`; any UITextInput mutation claims it (`claimPendingInputMethodKeys`), and an unclaimed one is forwarded to `super` or replayed to the surface.
-2. **Software keyboard** → UIKit calls `insertText(_:)` / `deleteBackward()` via UIKeyInput. `TerminalSoftwareKeyCommitRouter.route` (`Shared/TerminalInputText.swift`) reads the `hardwareKeyboard.keyHandled` flag to drop a hardware duplicate and turns a lone unmarked `"\n"`/`"\r"` into a synthetic Return key event (`sendSyntheticKey(usage: 0x28)` on iOS, `sendReturnKey()` on Catalyst). Other text is re-encoded as a key event (`sendTypedText`), **not** handed to `surface.sendText` — see "Key Path vs Text Path" below.
+2. **Software keyboard** → UIKit calls `insertText(_:)` / `deleteBackward()` via UIKeyInput. `TerminalSoftwareKeyCommitRouter.route` (`Shared/TerminalInputText.swift`) reads the `hardwareKeyboard.keyHandled` flag to drop a hardware duplicate and turns a lone unmarked `"\n"`/`"\r"` into a synthetic Return key event (`sendSyntheticKey(usage: 0x28)` on iOS, `sendReturnKey()` on Catalyst). Other text is re-encoded as a key event (`sendTypedText`), **not** handed to `surface.paste(text:)` — see "Key Path vs Text Path" below.
 3. **Input accessory bar** (iOS only, excludes Catalyst) → `TerminalInputAccessoryView` provides a toolbar above the software keyboard with Esc, Tab, arrow keys, modifier keys (Ctrl/Alt/Cmd), symbol keys, and Paste. The layout is `UITerminalView.inputAccessoryItems: [TerminalInputAccessoryItem]` (`defaultItems`; an empty array removes the bar). Modifier keys support **sticky states**: tap to arm (consumed after next key), double-tap to lock (persists until toggled off). Sticky modifier state is tracked by `TerminalStickyModifierState`; `+PublicSticky.swift` exposes it (`toggleStickyModifier`, `stickyActivation(for:)`, `resetStickyModifiers`, `setStickyModifierChangeHandler`) for hosts that draw their own bar. Actions are dispatched via `UITerminalView+InputAccessory.swift` (`handleInputBarKey`: keys go through `sendSyntheticKey`, symbols through `handleStickyTextInput`, Paste through `pasteFromPasteboard`). Button colors are configurable via `TerminalInputAccessoryStyle` (regular/active background and foreground), exposed as `UITerminalView.inputAccessoryStyle`. A clean direct-touch tap sends its click, then calls `toggleSoftwareKeyboard()` — an `open func` declared in the class body (not an extension) precisely so a host's `makePlatformView` subclass can override it; a keyboard lock overrides it to do nothing, and the tap's click still lands on the program.
 4. **IME / marked text** → `setMarkedText` / `unmarkText` delegate to `TerminalTextInputHandler`, which keeps the composition in a `TerminalMarkedTextState` and calls `surface.preedit()` for inline composition preview. Committed text goes through `insertText`. Sticky modifiers are respected during IME composition (`handleStickyMarkedText` / `handleStickyCommittedText`).
 5. **Text positioning** → `TerminalTextPosition` / `TerminalTextRange` (UITextPosition/UITextRange subclasses) provide minimal cursor geometry. `caretRect`/`firstRect` use `surface.imePoint()` for IME candidate window placement.
@@ -149,18 +204,18 @@ Files in `Platform/UIKit/`:
 - `UITerminalView.swift` — main view, `canBecomeFirstResponder`, coordinator setup, per-concern state storage, `setSurfaceVisible`, selection copy menu (context menu / edit menu), keyboard show/hide observers
 - `UITerminalView+UITextInput.swift` — full UITextInput conformance (UIKeyInput, marked text, positions, geometry), `TextInputBridgeState`
 - `UITerminalView+Keyboard.swift` — hardware key handling via UIPress, Ctrl `UIKeyCommand`s, input-method key deferral, modifier translation; `HardwareKeyboardState`, `SoftwareKeyboardState`
-- `UITerminalView+InputAccessory.swift` — input accessory bar integration (iOS only), key actions, sticky modifier dispatch, `sendSyntheticKey` / `sendControlByte` / `sendModifiedTextKey`
+- `InputAccessory/UITerminalView+InputAccessory.swift` — input accessory bar integration (iOS only), key actions, sticky modifier dispatch, `sendSyntheticKey` / `sendControlByte` / `sendModifiedTextKey`
 - `UITerminalView+Interaction.swift` — tap-to-click and keyboard toggle, touch scrolling, momentum scroll via CADisplayLink, scroll-wheel recognizer, indirect-pointer selection, long-press selection, copy/paste actions; `PointerInteractionState`, `MomentumScrollState`
 - `UITerminalView+Drop.swift` — drag and drop: files staged to paths, text and links as text (see "Key Path vs Text Path")
 - `UITerminalView+PinchZoom.swift` — pinch changes font size via `increase_font_size` / `decrease_font_size` bindings (iOS only); `FontZoomState`
 - `UITerminalView+PublicInput.swift` — public `acquireProgrammaticFocus`, `paste(text:)`, `sendKey`, `performBindingAction`, `jumpToPrompt(by:)`, `scrollToRow`
-- `UITerminalView+PublicSticky.swift` — public sticky-modifier API (`TerminalPublicStickyModifier` / `TerminalPublicStickyActivation`) for hosts with their own accessory UI (iOS only)
+- `InputAccessory/UITerminalView+PublicSticky.swift` — public sticky-modifier API (`TerminalPublicStickyModifier` / `TerminalPublicStickyActivation`) for hosts with their own accessory UI (iOS only)
 - `UITerminalView+Snapshot.swift` — public `snapshotImage()`: render-server snapshot (`drawHierarchy`) of the surface, Metal layer included; the AppKit twin (`AppTerminalView+Snapshot.swift`, `cacheDisplay`) is best-effort for Metal content. Reached from state via `TerminalViewState.attachedPlatformView`
 - `UITerminalView+Lifecycle.swift` — application active/background observers, display scale, sublayer frames (held at `core.syncedViewSize`, not the bounds, while a resize throttle has the surface at an older size — a layer stretched to the new bounds shows the old frame scaled and the engine's derived `contentsScale` fights the post-render correction every tick), focus, color scheme; `FocusBridgeState`
-- `TerminalInputAccessoryView.swift` — input accessory bar UIView (blur background, scrollable button layout)
-- `TerminalInputAccessoryStyle.swift` — configurable button colors for the accessory bar (regular/active background and foreground)
-- `TerminalInputBarKey.swift` — public `TerminalInputAccessoryItem` (bar layout, `defaultItems`) and internal `TerminalInputBarKey` (esc, tab, arrows, symbols, paste)
-- `TerminalStickyModifierState.swift` — modifier key state machine (inactive/armed/locked, double-tap locking)
+- `InputAccessory/TerminalInputAccessoryView.swift` — input accessory bar UIView (blur background, scrollable button layout)
+- `InputAccessory/TerminalInputAccessoryStyle.swift` — configurable button colors for the accessory bar (regular/active background and foreground)
+- `InputAccessory/TerminalInputBarKey.swift` — public `TerminalInputAccessoryItem` (bar layout, `defaultItems`) and internal `TerminalInputBarKey` (esc, tab, arrows, symbols, paste)
+- `InputAccessory/TerminalStickyModifierState.swift` — modifier key state machine (inactive/armed/locked, double-tap locking)
 - `TerminalTextInputHandler@UIKit.swift` — IME state machine (marked text, preedit bridge, sticky modifier support), `sendTypedText`
 - `TerminalTextPosition.swift` — TerminalTextPosition / TerminalTextRange subclasses
 
@@ -207,11 +262,12 @@ US-layout table (`usLayoutCharacters`); `TerminalKeyPress`
 macOS keycode (`hasPlatformKeycode`). It is re-exposed on `TerminalViewState`
 and on both views in `+PublicInput.swift` — the UIKit one commits an open
 composition and spends armed sticky modifiers first, the AppKit one commits
-the composition. `paste(text:)` on the same three is the text path.
-`TerminalViewState.send(_:)` and `AppTerminalView.sendText(_:)` are
-deprecated names of `paste(text:)` because hosts read them as "type this" and
-sent `"ls\r"` through a paste. `TerminalSurface.sendText` stays the primitive
-under `paste`.
+the composition. `paste(text:)` on the same three is the text path, and it is
+the only name that path answers to: 2.0.0 removed
+`TerminalViewState.send(_:)`, `AppTerminalView.sendText(_:)` and the
+`TerminalSurface.sendText(_:)` primitive they wrapped, because hosts read
+those names as "type this" and sent `"ls\r"` through a paste.
+`TerminalSurface.paste(text:)` is the primitive the other two call.
 
 Getting this backwards does not fail loudly — it produces symptoms that look
 like rendering or cursor bugs, because the shell is the thing that behaves
@@ -229,7 +285,7 @@ differently:
   turns a lone unmarked `insertText("\n")` / `"\r"` into a synthetic Return
   key event).
 - A host that tries to rewrite the outbound byte stream to add modifiers hits
-  the bracketed-paste markers wrapped around every `sendText` call, which is
+  the bracketed-paste markers wrapped around every `paste(text:)` call, which is
   why the sticky-modifier state machine is exposed instead
   (`UITerminalView+PublicSticky.swift`).
 
@@ -239,7 +295,7 @@ Neither the AppKit path nor the sample app can catch a regression here:
   event (`startCollectingText` / `finishCollectingText` in
   `TerminalTextInputHandler@AppKit.swift`), so it never touches the text path
   for typed characters; only an `insertText` outside a key event — an IME
-  commit from the candidate window — reaches `sendText`.
+  commit from the candidate window — reaches `paste(text:)`.
 - `Example/MobileGhosttyApp` drives a ShellCraftKit simulated shell, which has
   no bracketed paste at all. **Only a real shell over a pty shows the bug**, so
   verify iOS input against one (`zsh` on device), not against the sample app.
@@ -336,8 +392,16 @@ so in the code — "it's just text" is the mistake this section exists to preven
   recognizer's 0.5 s so a hold never toggles the keyboard).
 - Indirect-pointer touches (`handleIndirectPointerTouches`, iOS and
   Catalyst) are mouse events: a click makes the view first responder and
-  sends position and button; a right click inside a selection opens the copy
-  menu. On Catalyst `touchesBegan` also calls `becomeFirstResponder`.
+  sends position and button with `TerminalInputModifiers` (not zero). A
+  `UIHoverGestureRecognizer` sends `sendMousePos` while no button is down
+  so DEC 1003 apps (tmux dividers) see the pointer before a click. Ghostty
+  decides whether that position becomes application input. A right click
+  inside a selection opens the copy menu only when
+  `surface.isMouseCaptured` is false; a captured secondary click is sent
+  to Ghostty immediately. Press/release pairing lives in
+  `TerminalPointerButtonSession`: cancel and leaving the window release
+  only a button whose press was sent. On Catalyst `touchesBegan` also
+  calls `becomeFirstResponder`.
 - Three pan recognizers coexist: direct touches scroll with momentum
   (`MomentumScrollState`, a `CADisplayLink`), indirect-pointer drags select
   (`handleIndirectPointerSelectionGesture`), and wheel/trackpad scroll
@@ -345,7 +409,24 @@ so in the code — "it's just text" is the mistake this section exists to preven
   `TerminalScrollWheelGestureRecognizer` accepts scroll events only
   (`allowedScrollTypesMask` plus `shouldReceive(_:)`): a scroll event is
   neither a touch nor a pointer drag, so without it a mouse scrolls nothing
-  on iOS, and with it a finger or a pointer drag never lands on it.
+  on iOS, and with it a finger or a pointer drag never lands on it. Every
+  scroll is sent with `precision: true`: UIKit delivers a discrete wheel
+  notch as a point translation, not a line count, and ghostty's
+  non-precision path would read it as lines times the scroll multiplier.
+  The wheel path sends the last pointer position (view points; Ghostty
+  applies content scale) before `sendMouseScroll` so a captured TUI can
+  associate the wheel with the cell under the pointer. Pointer mods come
+  from a live hover recognizer, else `GCKeyboard.coalesced` on iOS, else
+  last `UIKey` flags, else `CGEvent` on Catalyst. `GHOSTTY_ACTION_MOUSE_SHAPE`
+  drives a `UIPointerInteraction` on iOS and Catalyst alike (region-scoped,
+  so nothing resets it when the pointer leaves; `applyMouseShape` calls
+  `invalidate()` so a change lands while the pointer is inside) — never a
+  global `NSCursor`. Hosts inject the same events through public
+  `sendMousePos` / `sendMouseButton` / `sendMouseScroll` / `isMouseCaptured`
+  on `TerminalSurface`, both platform views, and `TerminalViewState`. The
+  hover recognizer must run simultaneously with the others and must not
+  cancel touches. Do not wrap the view in a host `ScrollView` that steals
+  wheel or pan events.
 - A pinch (`+PinchZoom`, iOS only) steps the font size through the
   `increase_font_size:1` / `decrease_font_size:1` bindings, clamped to
   `minFontSize`…`maxFontSize` (4…64); Cmd+`=`/`-` on a hardware keyboard
@@ -369,15 +450,23 @@ when the delegate does not adopt the protocol. The C side is the
 `confirm_read_clipboard_cb` runtime callback (`TerminalController+Config.swift`
 → `TerminalCallbacks.confirmReadClipboard`) for reads and pastes, and the
 write-clipboard callback for `.osc52Write`; tests in
-`Tests/GhosttyKitTest/TerminalClipboardConfirmationTests.swift`.
+`Tests/GhosttyKitTest/Clipboard/TerminalClipboardConfirmationTests.swift`.
 
 ### iOS Long-Press Text Selection
 
-Long-press ≥0.5s on `UITerminalView` (single-finger direct touch, iOS only — Catalyst excluded; `handleLongPressForSelection` in `+Interaction`) triggers `TerminalSurfaceTextSelectionRequestDelegate.terminalDidRequestTextSelection(_:)`. The host receives a `TerminalTextSelectionRequest` (`text`: viewport snapshot, `anchorRange`: UTF-16 `NSRange?` for pre-selection, `sourcePoint`) and is expected to present a host UI (e.g. UITextView sheet). Word detection uses `ghostty_surface_quicklook_word` via `surface.quicklookWord()` (Apple-only); `TerminalSelectionAnchor.resolveRange` (`Surface/`) maps the result to an `NSRange` via NSString UTF-16 calculations. Same-row duplicate occurrences are disambiguated by `pointX / cellWidthPoints`; callers must convert `cellPixels / displayScale → points` so ghostty's `tl_px_x/y` host-point units match. Prefix CJK full-width characters can shift cell-vs-UTF-16 columns and degrade disambiguation (ASCII-only correct, best-effort otherwise). The recognizer is gated by `gestureRecognizerShouldBegin` to stay inactive when no host has opted in: the delegate must adopt the protocol, and for a `TerminalViewState` delegate (which adopts it unconditionally) `onTextSelectionRequest` must be set (`activeTextSelectionDelegate`). Only the `inMemory` backend is supported — the snapshot comes from `InMemoryTerminalSession.readViewportText()`, and any other backend logs and returns.
+Long-press ≥0.5s on `UITerminalView` (single-finger direct touch, iOS only — Catalyst excluded; `handleLongPressForSelection` in `+Interaction`) triggers `TerminalSurfaceTextSelectionRequestDelegate.terminalDidRequestTextSelection(_:)`. The host receives a `TerminalTextSelectionRequest` (`text`: viewport snapshot, `anchorRange`: UTF-16 `NSRange?` for pre-selection, `sourcePoint`) and is expected to present a host UI (e.g. UITextView sheet). Word detection uses `ghostty_surface_quicklook_word` via `surface.quicklookWord()` (Apple-only); `TerminalSelectionAnchor.resolveRange` (`Surface/`) maps the result to an `NSRange` via NSString UTF-16 calculations from the word's `offsetStart` (ghostty's linear viewport cell index, `row * columns + column`) and `surface.size().columns`; same-row duplicate occurrences are disambiguated by that column. The `tl_px_x/y` fields are not used: `tl_px_y` is the row's text baseline plus the top window padding, not the cell top, so dividing it by the cell height lands one row low once the padding exceeds the baseline offset. Prefix CJK full-width characters can shift cell-vs-UTF-16 columns and degrade disambiguation (ASCII-only correct, best-effort otherwise). The recognizer is gated by `gestureRecognizerShouldBegin` to stay inactive when no host has opted in: the delegate must adopt the protocol, and for a `TerminalViewState` delegate (which adopts it unconditionally) `onTextSelectionRequest` must be set (`activeTextSelectionDelegate`). Only the `inMemory` backend is supported — the snapshot comes from `InMemoryTerminalSession.readViewportText()`, and any other backend logs and returns.
 
 In iPhone UI tests, synthesize ordinary terminal taps as explicitly short presses and verify `hasKeyboardFocus` before `typeText`; a loaded hosted runner can stretch `tap()` long enough for the selection recognizer to present its sheet. Keep the ordinary XCTest tap and typing path on iPad, where short presses do not reliably publish keyboard focus through accessibility.
 
 ### Manifest Sync
+
+Generated configs live in `TerminalController.managedConfigDirectory`
+(`<tmp>/<host bundle identifier>/ghostty-config-<UUID>.conf`, with the
+process name as the fallback for an unbundled host). Controllers remove their
+files on replacement and destruction. A host can clear the directory before
+creating controllers and on termination to recover leftovers from force-quits;
+never clear it during a live controller's use. The old loose files in shared
+tmp have no host identity, so the library does not sweep them across apps.
 
 When changing SwiftPM products, targets, or test dependencies, update all three together:
 
@@ -396,41 +485,64 @@ the two must describe the same targets.
 
 Two release tracks, decoupled since 1.4.0:
 
-- **`upstream.<X.Y.Z>` tags own the XCFramework.** `X.Y.Z` is the upstream
-  Ghostty *release* version: `Ghostty.version` names it, `Ghostty.ref` pins
-  its tag's exact commit sha, and the "Build Upstream XCFramework" workflow
-  (build.yml, dispatch-only) verifies they agree, builds all targets with
-  Zig, and publishes `GhosttyKit.xcframework.zip` on the `upstream.<X.Y.Z>`
-  release (it exits early if that tag already exists). Both files sit at
-  the repo root, one line each. Patches in `Patches/ghostty/` target that
-  release, not upstream main; the "Source Build" workflow (source-build.yml)
+- **`upstream.<sha12>` tags own the XCFramework.** Ghostty is pinned to a
+  *commit*, not a release: `Ghostty.ref` (repo root, one line, a full
+  lowercase sha) names it, and the "Build Upstream XCFramework" workflow
+  (build.yml, dispatch-only) checks the sha resolves exactly on
+  ghostty-org/ghostty, builds all targets with Zig, and publishes
+  `GhosttyKit.xcframework.zip` on the `upstream.<first 12 hex of the sha>`
+  release (it exits early if that tag already exists). Upstream tags
+  rarely, and a release pin kept us off the fixes on main while still
+  taking upstream's regressions with each bump; a commit pin is what we
+  can actually choose. There is no `Ghostty.version` any more — the
+  `upstream.1.3.1`, `upstream.1.3.1-2` and `upstream.1.3.1-3` releases
+  predate the switch and stay as they are. Patches in `Patches/ghostty/`
+  target the pinned commit; the "Source Build" workflow (source-build.yml)
   rebuilds every target on a PR that touches `Ghostty.ref`, `Patches/`,
-  `Script/build-ghostty.sh`, `Script/prepare-zig-lib.sh`, or
-  `Script/support/`. When bumping, keep the Zig version pinned in build.yml
+  `Script/apply-patches.sh`, `Script/build-ghostty.sh`,
+  `Script/prepare-zig-lib.sh`, or `Script/support/`. When bumping, keep the Zig version pinned in build.yml
   *and* source-build.yml (0.15.2 today) in sync with the pinned upstream's
   `minimum_zig_version` (build.zig.zon) — and re-diff `Patches/zig/` against
   the new std, since `prepare-zig-lib.sh` looks the patch up by exact Zig
-  version. **`Ghostty.build`** is the asset revision for one Ghostty
-  release: `Script/storage-tag.sh` turns version + build into the storage
-  tag (`upstream.1.3.1` for build 1 or no file, `upstream.1.3.1-2` from 2
+  version. **`Ghostty.build`** is the asset revision for one pinned
+  commit: `Script/storage-tag.sh` turns sha + build into the storage tag
+  (`upstream.<sha12>` for build 1 or no file, `upstream.<sha12>-2` from 2
   on), and both build.yml and release.yml read it from there. Bump it when
   the patch stack or the target set changes without a Ghostty bump —
   build.yml exits early on an existing tag, so nothing else republishes
-  the asset. The visionOS slices (xros, xrsimulator) build against a
-  patched Zig std (`Patches/zig/`, `Script/prepare-zig-lib.sh` — a copy
-  under the build cache exported as `ZIG_LIB_DIR`; the toolchain on PATH
-  is never edited).
+  the asset; delete it again on the next `Ghostty.ref` bump. A new pin's
+  storage tag does not exist until build.yml has run for it, and
+  release.yml refuses to cut a package until it does. The visionOS slices (xros, xrsimulator) build against a
+  patched Zig std only when `Patches/zig/` carries a patch for the Zig on
+  PATH (`Script/prepare-zig-lib.sh` — a copy under the build cache
+  exported as `ZIG_LIB_DIR`; the toolchain itself is never edited); Zig
+  0.16.0 needs none. Zig 0.16 also renamed Mac Catalyst from
+  `*-ios-macabi` to `*-maccatalyst`, its own OS tag — `0016-maccatalyst.sh`
+  and `0017-zig-pkg-apple-targets.sh` give it the iOS arms in Ghostty and
+  in the Zig packages (libxev, aro) under `<source>/zig-pkg/`.
 - **Bare semver tags (1.4.0+) are Swift package releases** and follow their
-  own sequence, independent of upstream's. The "Release Package" workflow
-  (release.yml, dispatch with `package_version`) never runs Zig: it
-  refuses a version that is not newer than the latest semver tag, requires
-  the `upstream.<Ghostty.version>` release to exist, renders `Package.swift`
+  own sequence, independent of upstream's. Since 1.5.2 the version is
+  `<major.minor>.<UTC YYYYMMDD>` (`1.5.20260903`): the patch is the release
+  date, so a `from:` pin takes every weekly release, and major.minor moves
+  only when someone passes a version by hand. The "Release Package"
+  workflow (release.yml, dispatch; `package_version` optional, derived
+  from the latest tag when empty) never runs Zig: it refuses a version
+  that is not newer than the latest semver tag, requires the storage
+  release from `Script/storage-tag.sh` to exist, renders `Package.swift`
   against its asset, runs `Script/test.sh` and `swift test` through
   `Package.local.swift`, commits the manifest, tags, and runs
   `Script/verify-release.sh <package_tag> <upstream_tag>` to check the
   manifest's URL and checksum against the asset the tag serves. A
-  Swift-only change releases in minutes. `Script/tag-release.sh` predates
-  this track (it cuts `1.0.<epoch>` tags) and no workflow uses it.
+  Swift-only change releases in minutes. **The "Weekly Upstream" workflow
+  (weekly.yml, Monday 02:00 UTC or dispatch) chains the whole thing**: it
+  pins `Ghostty.ref` to upstream main's head (dropping `Ghostty.build`),
+  pushes that commit, then dispatches build.yml and release.yml in turn
+  through `Script/dispatch-workflow.sh`, which waits for each run and
+  fails with it — a pin that does not build stops the chain with main
+  pointing at it and a red run to fix (usually a new `-vN` patch variant,
+  see `Patches/ghostty/README.md`, or a Zig bump when upstream's
+  `minimum_zig_version` moved). The release step is skipped when main has
+  not moved since the latest package tag.
   **Never push a bare semver tag by hand**: nothing but release.yml checks
   a manifest against its asset before tagging, and a hand-pushed tag gets
   no GitHub release (1.4.8, 1.4.9 and 1.4.12 were pushed that way; their
@@ -482,7 +594,7 @@ Two release tracks, decoupled since 1.4.0:
   pipeline (`build.sh`, `Script/build*.sh`, `merge-xcframework.sh`,
   `test*.sh`, `verify-*.sh`) is `#!/bin/bash` with `[*]` progress and `[!]`
   failure; the repo-maintenance scripts (`apply-patches.sh`,
-  `generate-themes.sh`, `tag-release.sh`) are `#!/bin/zsh` with `[+]`
+  `generate-themes.sh`, `audit-releases.sh`) are `#!/bin/zsh` with `[+]`
   success and `[-]` failure. Match the file you are editing; use zsh and
   `[+]`/`[-]` for a new standalone script
 - Scripts `cd "$(dirname "$0")/.."` to the repo root first; most then

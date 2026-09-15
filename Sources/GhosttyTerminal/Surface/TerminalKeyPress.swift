@@ -14,7 +14,7 @@ import GhosttyKit
 /// (`ghostty_surface_text`), which is a paste. A pasted `\r` under
 /// bracketed paste is text in the shell's edit line, not Enter. Keystrokes
 /// therefore go here; only clipboard content belongs in
-/// ``TerminalSurface/sendText(_:)``.
+/// ``TerminalSurface/paste(text:)``.
 public struct TerminalKeyPress: Sendable, Hashable {
     public var key: TerminalKey
     public var modifiers: TerminalInputModifiers
@@ -67,10 +67,12 @@ public struct TerminalKeyPress: Sendable, Hashable {
         event.action = action
         event.keycode = TerminalHardwareKeyRouter.appKitKeyCode(for: key.ghosttyKey)
         event.mods = modifiers.ghosttyMods
-        // Modifiers that produced the text are spent; Control and Command
-        // stay visible to keybinding matching, as on the hardware paths.
+        // Only Shift produced the text (the US table knows no Option
+        // layer), so only Shift is spent; Control, Alt and Command stay
+        // visible to the encoder — libghostty strips consumed modifiers
+        // before deciding on Ctrl bytes and the Alt ESC prefix.
         event.consumed_mods = modifiers
-            .subtracting([.ctrl, .ctrlRight, .super_, .superRight])
+            .intersection([.shift, .shiftRight])
             .ghosttyMods
         event.unshifted_codepoint = unshiftedCodepoint
         event.composing = false

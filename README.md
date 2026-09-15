@@ -9,9 +9,7 @@ Swift Package wrapping [Ghostty](https://ghostty.org)'s terminal emulator librar
 - macOS 13+
 - iOS 15+
 - Mac Catalyst 15+
-- visionOS 1+ (`GhosttyTerminal` is the iOS view: touch, pointer, and
-  hardware keyboard work; there is no input accessory bar, no haptics, and
-  no `UIScreen`-derived scale — see the `#if os(visionOS)` guards)
+- visionOS 1+
 
 ## Products
 
@@ -26,7 +24,7 @@ Swift Package wrapping [Ghostty](https://ghostty.org)'s terminal emulator librar
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Lakr233/libghostty-spm.git", from: "1.4.0"),
+    .package(url: "https://github.com/Lakr233/libghostty-spm.git", from: "1.5.2"),
 ]
 ```
 
@@ -112,10 +110,11 @@ terminal.paste(text: "ls -la")                   // A paste, not keystrokes.
 mirrors every libghostty key, the press is encoded the way the program's key
 mode expects, and a release follows. `paste(text:)` is the text path: a
 program that enabled bracketed paste receives it framed as a paste, so a `\r`
-in it is a pasted character, not Enter. `TerminalViewState.send(_:)` and
-`AppTerminalView.sendText(_:)` are deprecated names of `paste(text:)` for that
-reason — they never sent keystrokes. On `TerminalSurface` the text path keeps
-its primitive name, `sendText(_:)`.
+in it is a pasted character, not Enter. `paste(text:)` is the only name the
+text path answers to on all three: 2.0.0 removed `TerminalViewState.send(_:)`,
+`AppTerminalView.sendText(_:)` and the `TerminalSurface.sendText(_:)`
+primitive, because none of them ever sent keystrokes and the names said
+otherwise.
 
 ### Prompt and Scrollback Navigation
 
@@ -128,8 +127,13 @@ terminal.jumpToPrompt(by: 1)  // Next prompt.
 terminal.scrollToRow(0)        // First absolute scrollback row.
 ```
 
-Prompt navigation requires [Ghostty shell integration](https://ghostty.org/docs/features/shell-integration),
-which records prompt boundaries. A host-managed backend must preserve or emit
+Prompt navigation requires [shell integration](https://ghostty.org/docs/features/shell-integration),
+which records prompt boundaries. The package bundles its own MIT-licensed
+bash and zsh integration (OSC 133 prompt marks, OSC 7 working directory,
+OSC 2 title, cursor shape) under `Resources/Ghostty/shell-integration`, and
+the `.exec` backend injects it the way upstream Ghostty does; upstream's own
+scripts are GPLv3 and are deliberately not shipped. Other shells get no
+automatic integration. A host-managed backend must preserve or emit
 equivalent OSC 133 prompt markers. Arbitrary Ghostty actions remain available
 through `performBindingAction(_:)`.
 
@@ -206,7 +210,7 @@ the software keyboard.
 The package downloads a pre-built XCFramework. To rebuild libghostty from the Ghostty source:
 
 ```bash
-# Requires: zig (CI builds with 0.15.2 — the pinned upstream's minimum_zig_version)
+# Requires: zig (CI builds with 0.16.0 — the pinned upstream's minimum_zig_version)
 ./build.sh
 ./build.sh --platforms macos,ios --source /path/to/ghostty --skip-tests
 ```
@@ -222,28 +226,37 @@ against the result unless `--skip-tests` is given. `Package.local.swift`
 points the binary target at that local `BinaryTarget/` build; `--download-url`
 regenerates `Package.swift` from `Package.swift.template` for an uploaded zip.
 
-The `visionos` group builds against a patched copy of Zig 0.15.2's standard
-library (`Patches/zig/`, staged under `build/cache` by
-`Script/prepare-zig-lib.sh`; the toolchain itself is not modified). On a Mac
-with Xcode 27 the pinned Zig cannot link its own build runner against the
-macOS SDK; `eval "$(./Script/support/xcode27-sdk-overlay.sh)"` puts a
-per-checkout SDK overlay on PATH that fixes that for the shell.
+The `visionos` group builds against a patched copy of the Zig standard
+library only when `Patches/zig/` holds a patch for the Zig on PATH (staged
+under `build/cache` by `Script/prepare-zig-lib.sh`; the toolchain itself is
+never modified). Zig 0.16.0 needs none. Xcode 27 needs the Metal toolchain
+component installed (`xcodebuild -downloadComponent MetalToolchain`). An SDK
+overlay script lived under `Script/support/` for Zig 0.15.2, which could not
+link its build runner against that SDK; 0.16 does it unaided, so the script
+was removed.
 
 ## Versions
 
-Pin a package tag (`1.4.0` … `1.4.13`, `1.5.0` for visionOS). These are
-independent of Ghostty's own version — every release so far ships Ghostty
-v1.3.1 (`Ghostty.version`; `Ghostty.ref` pins its commit). Package tags are
-cut by the "Release Package" workflow only; `Script/audit-releases.sh`
-checks every tag's manifest against the asset it downloads.
+Pin `1.5.2` or later (`from: "1.5.2"`). The `1.4.0` … `1.4.13` and `1.5.0`
+tags and releases were withdrawn and no longer exist; `1.5.1` is the
+oldest live tag on this track and the first with visionOS slices. Versions
+after `1.5.2` are `<major.minor>.<UTC YYYYMMDD>` (`1.5.20260903`): a
+release lands every week with Ghostty pinned to upstream main's head of
+that Monday (`Ghostty.ref`, a commit rather than a release, because
+upstream tags rarely and main carries the fixes we need), the date is the
+patch number so a `from:` pin takes each one, and major.minor moves only
+for a breaking change to this package's API. Package tags are cut by the
+"Release Package" workflow only; `Script/audit-releases.sh` checks every
+tag's manifest against the asset it downloads.
 
-`upstream.<X.Y.Z>` releases carry the XCFramework built from Ghostty `X.Y.Z`
-(`upstream.<X.Y.Z>-<N>` when the same Ghostty was rebuilt with a changed patch
-stack or target set — `Ghostty.build` holds `N`; `upstream.1.3.1-2` is the
-first asset with visionOS slices); each package tag's `Package.swift`
-downloads one of them. Those and the older
-`storage.*` tags are XCFramework assets, not package versions. SPM should not
-depend on them.
+`upstream.<sha12>` releases carry the XCFramework built from that Ghostty
+commit (`upstream.<sha12>-<N>` when the same commit was rebuilt with a
+changed patch stack or target set — `Ghostty.build` holds `N`). The older
+`upstream.1.3.1`, `upstream.1.3.1-2` (the first asset with visionOS slices)
+and `upstream.1.3.1-3` were named after the upstream release instead; each
+package tag's `Package.swift` downloads one of these. Those and the still
+older `storage.*` tags are XCFramework assets, not package versions. SPM
+should not depend on them.
 
 ## Trimmed Build
 
@@ -276,7 +289,11 @@ The bundled `libghostty` is a trimmed build optimized for sandboxed, embedded us
 
 MIT License. See [LICENSE](LICENSE) for details.
 
-The bundled `libghostty` binary is built from [Ghostty](https://ghostty.org), which has its own license terms.
+The bundled `libghostty` binary is built from [Ghostty](https://ghostty.org), MIT License, Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors.
+
+`Sources/GhosttyTerminal/Resources/terminfo/` is the `xterm-ghostty` terminfo entry compiled from Ghostty's `src/terminfo/ghostty.zig` (same MIT License and copyright).
+
+`Sources/GhosttyTerminal/Resources/Ghostty/shell-integration/` is this package's own bash and zsh integration, MIT License, written from scratch — Ghostty's own bash and zsh integration scripts are GPLv3 and are not shipped. `bash/bash-preexec.sh` is vendored from [bash-preexec](https://github.com/rcaloras/bash-preexec), MIT License; see [LICENSE-bash-preexec.md](Sources/GhosttyTerminal/Resources/Ghostty/shell-integration/bash/LICENSE-bash-preexec.md).
 
 `GhosttyTheme` color data comes from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes), MIT License; see [Sources/GhosttyTheme/LICENSE](Sources/GhosttyTheme/LICENSE).
 

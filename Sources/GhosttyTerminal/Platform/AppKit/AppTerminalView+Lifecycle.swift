@@ -68,7 +68,6 @@
                 }
                 updateMetalLayerMetrics()
                 updateColorScheme()
-                core.startDisplayLink()
                 core.requestImmediateTick()
 
                 NotificationCenter.default.addObserver(
@@ -111,6 +110,9 @@
             }
         }
 
+        // Window key state is not a first-responder change: reporting it
+        // through the focus bridge flips the host's FocusState, whose
+        // synchronizeFocus then resigns a view that is still first responder.
         @objc func windowDidBecomeKey(_: Notification) {
             let focused = window?.isKeyWindow == true
                 && window?.firstResponder === self
